@@ -55,3 +55,6 @@ docs/_build/
 
 # PyBuilder
 target/
+
+# exclude C64 ROM images, due to legal concerns
+ROMS

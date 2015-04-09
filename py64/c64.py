@@ -90,12 +90,14 @@ class CPUPort(memory.Memory): # $0..$1
             #time.sleep(5.0)
 
 class C64(object):
-    def __init__(self):
+
+    def __init__(self, config=None):
         self.interrupt_clock = 0
         self.VIC_clock = 0
         self.CPU = cpu.CPU()
         MMU = self.CPU.MMU
         address = 0
+        self.config = config
         # power-up pattern:
         for i in range(512):
             for b in range(64):
@@ -114,7 +116,8 @@ class C64(object):
 
         char_ROM = None
         for ROM, range_1 in self.ROMs:
-            value = open("ROM/bin/C64/" + ROM, "rb").read()
+            value = open(os.path.join(self.config.get('rom_location'),
+              ROM), "rb").read()
             size = range_1[1] - range_1[0]
             #print(ROM)
             assert size == len(value), "C64 ROM is not truncated"

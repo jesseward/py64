@@ -7,8 +7,8 @@ import gtk
 import gobject
 import sys
 import time
-from c64 import c64, screens
-from c64.symbols import S_A, S_X, S_Y, S_SP, S_PC
+from py64 import c64, screens
+from py64.symbols import S_A, S_X, S_Y, S_SP, S_PC
 from optparse import OptionParser
 
 def unpack_unsigned(value):
@@ -232,7 +232,7 @@ def main():
     parser.add_option("-t", "--tape", dest="tape",help="load from T64 tape image", metavar="TAPE")
     parser.add_option("-p", "--prg", dest="prg", help="load from PRG file", metavar="PRG")
     (options, args) = parser.parse_args()
-    c_64 = c64.C64()
+    c_64 = c64.C64(config={'rom_location': 'ROMS'})
     if options.tape:
         c_64.set_tape_image_name(options.tape, "T64")
         #c_64.set_tape_loader(loaders.t64.Loader.parse(open(options.tape, "rb"), options.tape))
