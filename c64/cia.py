@@ -39,6 +39,7 @@ B_TIMER_B_CONTROL = 0xF
 
 
 class Timer(object):
+
     def __init__(self):
         self.B_active = False
         self.B_indicate_underflow = False
