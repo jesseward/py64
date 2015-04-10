@@ -19,3 +19,4 @@ TODOs
 * Language translations (to english)
 * Installer 
 * Documentation across classes and libs
+* Test Cases
