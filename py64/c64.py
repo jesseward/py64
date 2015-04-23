@@ -196,7 +196,7 @@ class C64(object):
         return True
 
     def cause_interrupt(self):
-        if "I" in self.CPU.flags: # interrupt DISABLE
+        if self.CPU.SR.I: # interrupt DISABLE
             #print("not supposed to cause interrupts right now...")
             return True
         #print("at 0x0283: %r" % self.CPU.MMU.read_memory(0x0283, 2))

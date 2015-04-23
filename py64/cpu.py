@@ -18,35 +18,43 @@ def err(message):
 def to_signed_byte(value):
     return value if value < 0x80 else -(256 - value)
 
-class Registers(object):
-    def __init__(self): # FIXME default values...
-        self.PC = 0
-        self.SP = 0xFF
-        self.X = 0
-        self.Y = 0
-        self.A = 0
 
-known_routines = {
-    0xE000: 'BASIC-Funktion EXP \xe2\x80\x93 Fortsetzung von $BFFF',
-    0xFFF3: 'IOBASE: R\xc3\xbcckmeldung der Basisadressen f\xc3\xbcr Ein- und',
-}
+class StatusRegister(object):
+    def __init__(self):
+        self.C = False  # Indicates when a bit of the result is to 
+                        # be carried to, or borrowed from, another byte.
+        self.Z = False  # Indicates when the result is equal, or not, to zero.
+        self.I = False  # Indicates when preventing, or allowing, non-maskable interrupts
+        self.D = False  # Indicates when switching between decimal/binary modes.
+        self.B = False  # Indicates when stopping the execution of machine code instructions
+        self.NOP = False  # unused SR 
+        self.V = False  # Indicates when the result is greater, or less, 
+                        # than can be stored in one byte (including sign).
+        self.N = False  # Indicates when the result is negative, or positive,
+                        # in signed operations.
+
+    def __iter__(self):
+        for sr in ['C', 'Z', 'I', 'D', 'B', 'NOP', 'V', 'N']:
+            yield (sr, getattr(self, sr))
+
+class Register(object):
+    def __init__(self):
+        self.PC = 0     # program counter 16 bit data register
+        self.SP = 0xFF  # stack pointer 8 bit data register
+        self.X = 0      # 8 bit data register
+        self.Y = 0      # 8 bit data register
+        self.A = 0      # 8 bit data register
+
 
 class CPU(object):
     def __init__(self):
-        self.B_debug_stack = False
-        CPU.opcode_to_mnem.append("XXX") # ShedSkin
-        CPU.opcode_to_mnem = CPU.opcode_to_mnem[:-1] # ShedSkin
-        assert len(CPU.opcode_to_mnem) == 0x100, "CPU opcode map covers all 256 possible opcodes"
         self.B_in_interrupt = False
-        self.registers = Registers()
+        self.registers = Register()
         self.MMU = mmu.MMU()
-        self.flags = set() # of N, V, B, D, I, Z, C.
-        self.flags.add("I")
-        self.flags.discard("C")
-        self.flags.add("Z")
-        #for mnem in set(CPU.opcode_to_mnem):
-        #    if not hasattr(self, mnem) and mnem not in CPU.exotic_opcodes:
-        #        raise NotImplementedError("warning: instruction %r not implemented")
+        self.SR = StatusRegister()
+        self.SR.I = True
+        self.SR.Z = True
+
         if False: # ShedSkin
             value = self.load_value_unadvancing(S_Z)
             value = self.load_value_advancing(S_Z)
@@ -97,13 +105,13 @@ class CPU(object):
         """ assumes 8 bit number, be careful. """
         assert isinstance(value, int), "CPU.update_flags_by_number: value is a number"
         if value < 0 or ((value & 128) != 0):
-            self.flags.add("N")
+            self.SR.N = True
         else:
-            self.flags.discard("N")
+            self.SR.N = False
         if value == 0:
-            self.flags.add("Z")
+            self.SR.Z = True
         else:
-            self.flags.discard("Z")
+            self.SR.Z = False
         return value
 
     def consume_operand(self, size):
@@ -182,7 +190,6 @@ class CPU(object):
     def load_value_advancing(self, addressing_mode):
         # FIXME is unsigned correct?
 
-
         value = None
         if addressing_mode == op.ACCUMULATOR:
             value = self.read_register(S_A)
@@ -245,10 +252,9 @@ class CPU(object):
         self.update_flags_by_number(result)
         #print("CMP RES", result)
         if reference_value >= value:
-            self.flags.add("C")
+            self.SR.C = True
         else:
-            self.flags.discard("C")
-            assert "N" in self.flags, "CPU.compare: N is in flags"
+            self.SR.C = False
 
 
     def CMP(self, opcode):
@@ -278,7 +284,7 @@ class CPU(object):
             reference_value)
 
     def add_BCD(self, a, b): # unsigned
-        carry = 1 if "C" in self.flags else 0  
+        carry = 1 if self.SR.C else 0  
         # N and Z are invalid on 6502
         a0 = a & 0xF
         a1 = a >> 4
@@ -290,9 +296,9 @@ class CPU(object):
             r0 = r0 - 10
         if r1 > 9:
             r1 = r1 - 10
-            self.flags.add("C")
+            self.SR.C = True
         else:
-            self.flags.discard("C")
+            self.SR.C = False
         # TODO overflow.
         value = (r1 << 4) | r0
         self.write_register(S_A, value)
@@ -300,7 +306,7 @@ class CPU(object):
         return value
 
     def subtract_BCD(self, a, b):
-        uncarry = 0 if "C" in self.flags else 1
+        uncarry = 0 if self.SR.C else 1
         # N and Z are invalid on 6502
         a0 = a & 0xF
         a1 = a >> 4
@@ -312,9 +318,9 @@ class CPU(object):
             r0 = 10 + r0
         if r1 < 0:
             r1 = 10 + r1
-            self.flags.discard("C")
+            self.SR.C = False
         else:
-            self.flags.add("C")
+            self.SR.C = True
         # TODO overflow.
         value = (r1 << 4) | r0
         self.write_register(S_A, value)
@@ -322,15 +328,15 @@ class CPU(object):
         return value
 
     def add(self, operand_0, operand_1):
-        carry = 1 if "C" in self.flags else 0
+        carry = 1 if self.SR.C else 0
         value = (operand_0 + operand_1 + carry)
         B_overflow_1 = False
         a_value = value
         if (value & 0xFF) != value: # that is, value>0xFF.
-            self.flags.add("C")
+            self.SR.C = True
             B_overflow_1 = True
         else:
-            self.flags.discard("C")
+            self.SR.C = False
         value = value & 0xFF
         # 0x7F+1 overflow
         # 0x80+0xFF overflow
@@ -339,12 +345,9 @@ class CPU(object):
         #B_overflow = ((operand_1 & 0x80) == 0 and (operand_0 & 0x80) == 0 and (value & 0x80) != 0) or \
         #             ((operand_1 & 0x80) != 0 and (operand_0 & 0x80) != 0 and (value & 0x80) == 0)
         if B_overflow:
-            self.flags.add("V")
+            self.SR.V = True
         else:
-            #if B_overflow_1 != False:
-            #    print("whoops") # , a_value, operand_0, operand_1)
-            # FIXME assert(B_overflow_1 == False)
-            self.flags.discard("V")
+            self.SR.V = False
         #self.store_value(addressing_mode, value)
         self.write_register(S_A, value)
         self.update_flags_by_number(value)
@@ -356,7 +359,7 @@ class CPU(object):
         operand_0 = self.read_register(S_A)
         operand_1 = self.load_value_advancing(op.instruction_set[opcode].address_id)
         #print("ADC", operand_0, operand_1)
-        if "D" in self.flags:
+        if self.SR.D:
             self.add_BCD(operand_0, operand_1)
         else:
             self.add(operand_0, operand_1)
@@ -369,20 +372,10 @@ class CPU(object):
         # TODO BCD arithmetic.
         operand_0 = self.read_register(S_A)
         operand_1 = self.load_value_advancing(op.instruction_set[opcode].address_id)
-        if "D" in self.flags:
+        if self.SR.D:
             self.subtract_BCD(operand_0, operand_1)
         else:
             self.add(operand_0, operand_1 ^ 0xFF)
-        #B_overflow = ((operand_0 ^ operand_1) & (operand_0 ^ (result & 0xFF)) & 0x80) != 0
-        #if B_overflow:
-        #    self.flags.add("V")
-        #else:
-        #    self.flags.discard("V")
-        #if result < 0 or (result & 128) != 0:
-        #    self.flags.add("C")
-        #else:
-        #    self.flags.discard("C") # FIXME test.
-        #self.store_value(addressing_mode, value)
 
     def test_bits(self, addressing_mode):
         reference_value = self.read_register(S_A)
@@ -397,15 +390,13 @@ class CPU(object):
         result, operand = self.test_bits(op.instruction_set[opcode].address_id)
         self.update_flags_by_number(result)
         if (operand & 64) != 0:
-            self.flags.add("V")
+            self.SR.V = True
         else:
-            self.flags.discard("V")
+            self.SR.V = False
         if (operand & 128) != 0:
-            self.flags.add("N")
+            self.SR.N = True
         else:
-            self.flags.discard("N")
-        #return result
-
+            self.SR.N = False
 
     def AND(self, opcode):
         """ AND with A """
@@ -459,11 +450,11 @@ class CPU(object):
 
     def CLD(self, opcode = 0xD8):
         """ Clear Decimal """
-        self.flags.discard("D")
+        self.SR.D = False
 
     def SED(self, opcode = 0xF8):
         """ Set Decimal """
-        self.flags.add("D")
+        self.SR.D = True
 
     NOP_addressing_modes = {
             0xEA: op.ACCUMULATOR,
@@ -546,9 +537,9 @@ class CPU(object):
     def ASL(self, opcode):
         value = self.load_value_unadvancing(op.instruction_set[opcode].address_id)
         if (value & 128) != 0:
-            self.flags.add("C")
+            self.SR.C = True
         else:
-            self.flags.discard("C")
+            self.SR.C = False
         result = (value << 1) & 0xFF
         self.store_value(op.instruction_set[opcode].address_id, result)
         self.update_flags_by_number(result)
@@ -556,9 +547,9 @@ class CPU(object):
     def LSR(self, opcode):
         value = self.load_value_unadvancing(op.instruction_set[opcode].address_id)
         if (value & 1) != 0:
-            self.flags.add("C")
+            self.SR.C = True
         else:
-            self.flags.discard("C")
+            self.SR.C = False
         result = (value >> 1) & 0xFF
         self.store_value(op.instruction_set[opcode].address_id, result)
         self.update_flags_by_number(result)
@@ -566,56 +557,51 @@ class CPU(object):
 
     def ROL(self, opcode):
         value = self.load_value_unadvancing(op.instruction_set[opcode].address_id)
-        value = ((value << 1) | (1 if "C" in self.flags else 0))
+        value = ((value << 1) | (1 if self.SR.C else 0))
         result = value & 0xFF
         if (value & 0x100) != 0:
-            self.flags.add("C")
+            self.SR.C = True
         else:
-            self.flags.discard("C")
+            self.SR.C = False
+
         self.store_value(op.instruction_set[opcode].address_id, result)
         self.update_flags_by_number(result)
-
-    ROR_addressing_modes = {
-            0x6A: S_A,
-            0x66: S_Z,
-            0x76: S_Z_X,
-            0x6E: S_ABS,
-            0x7E: S_ABS_X,
-    }
-    def ROR(self, opcode = 0x66):
-        addressing_mode = CPU.ROR_addressing_modes[opcode]
-        value = self.load_value_unadvancing(addressing_mode)
-        result = ((value >> 1) | (128 if "C" in self.flags else 0))  & 0xFF
-        if (value & 1) != 0:
-            self.flags.add("C")
-        else:
-            self.flags.discard("C")
-        #(self.flags.add if value & 1 else self.flags.discard)("C") # yes, the old value!
-        self.store_value(addressing_mode, result)
-        self.update_flags_by_number(result)
-
 
     def ROR(self, opcode = 0x66):
         value = self.load_value_unadvancing(op.instruction_set[opcode].address_id)
-        result = ((value >> 1) | (128 if "C" in self.flags else 0))  & 0xFF
+        result = ((value >> 1) | (128 if self.SR.C else 0)) & 0xFF
         if (value & 1) != 0:
-            self.flags.add("C")
+            self.SR.C = True
         else:
-            self.flags.discard("C")
-        #(self.flags.add if value & 1 else self.flags.discard)("C") # yes, the old value!
+            self.SR.C = False
+        self.store_value(op.instruction_set[opcode].address_id, result)
+        self.update_flags_by_number(result)
+
+    def ROR(self, opcode = 0x66):
+        value = self.load_value_unadvancing(op.instruction_set[opcode].address_id)
+        result = ((value >> 1) | (128 if self.SR.C else 0)) & 0xFF
+        if (value & 1) != 0:
+            self.SR.C = True
+        else:
+            self.SR.C = False
         self.store_value(op.instruction_set[opcode].address_id, result)
         self.update_flags_by_number(result)
     
-    status_positions = ["C", "Z", "I", "D", "B", "5", "V", "N"]
-
     def pop_status(self):
         flags_bin = self.stack_pop(1)
-        self.flags = set([(flag_name if (flags_bin & (1 << flag_bit)) != 0 else "") for flag_bit, flag_name in enumerate(CPU.status_positions)])
-        self.flags.discard("")
+        for flag_bit, flag_name in enumerate(self.SR):
+            if flags_bin & (1 << flag_bit) != 0:
+              setattr(self.SR, flag_name[0], True)
+            else:
+              setattr(self.SR, flag_name[0], False)
 
     def push_status(self):
-        flags_bin = sum([((1 << flag_bit) if flag_name in self.flags else 0) for flag_bit, flag_name in enumerate(CPU.status_positions)])
-        self.stack_push(flags_bin, 1)
+        push = 0
+        for flag_bit, flag_name in enumerate(self.SR):
+            if getattr(self.SR, flag_name[0]) == True:
+                push += 1 << flag_bit
+        self.stack_push(push, 1)
+
 
     def stack_push(self, value, size):
         """
@@ -637,8 +623,6 @@ class CPU(object):
         #self.write_register(S_SP, SP)
         address = base + SP + 1
         self.MMU.write_memory(address, value, size)
-        if self.B_debug_stack:
-            print("stack push %r at $%X" % (value, address))
 
     def stack_peek(self, size):
         SP = self.read_register(S_SP)
@@ -651,8 +635,6 @@ class CPU(object):
         SP = self.read_register(S_SP)
         self.write_register(S_SP, SP + size)
         base = 0x100
-        if self.B_debug_stack:
-            print("stack pop %r at $%X" % (value_bin, base + SP + 1))
         #print("stack peek %r" % self.stack_peek(2))
         return value_bin
 
@@ -660,51 +642,50 @@ class CPU(object):
         self.write_register(S_PC, new_PC)
 
     def BNE(self, opcode):
-        assert opcode == 0xD0, "CPU.BNE: opcode is known"
         offset = self.consume_signed_operand(1)
-        if "Z" not in self.flags:
+        if not self.SR.Z:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
     def BEQ(self, opcode):
         offset = self.consume_signed_operand(1)
-        if "Z" in self.flags:
+        if self.SR.Z:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
     def BPL(self, opcode = 0x10):
         offset = self.consume_signed_operand(1)
-        if "N" not in self.flags:
+        if not self.SR.N:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
     def BMI(self, opcode = 0x30):
         offset = self.consume_signed_operand(1)
-        if "N" in self.flags:
+        if self.SR.N:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
     def BCS(self, opcode = 0xB0):
         offset = self.consume_signed_operand(1)
-        if "C" in self.flags:
+        if self.SR.C:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
     def BCC(self, opcode):
         offset = self.consume_signed_operand(1)
-        if "C" not in self.flags:
+        if not self.SR.C:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
     def BVS(self, opcode):
         offset = self.consume_signed_operand(1)
-        if "V" in self.flags:
+        if self.SR.V:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
     def BVC(self, opcode):
         offset = self.consume_signed_operand(1)
-        if "V" not in self.flags:
+        if not self.SR.V:
             #print("OFFSET", offset)
             self.set_PC((self.read_register(S_PC) + offset) & 0xFFFF)
 
@@ -753,14 +734,14 @@ class CPU(object):
 
     def SEI(self, opcode = 0x78):
         """ Set Interrupt Disable """
-        self.flags.add("I")
+        self.SR.I = True
 
     def CLI(self, opcode = 0x58):
         """ Clear Interrupt Disable """
-        self.flags.discard("I")
+        self.SR.I = False
 
     def clear_Z(self): # mostly for unit tests.
-        self.flags.discard("Z")
+        self.SR.Z = False
 
 #    def set_Z(self): # mostly for unit tests.
 #        self.flags.add("Z")
@@ -776,15 +757,15 @@ class CPU(object):
 
     def CLC(self, opcode = 0x18):
         """ Clear Carry """
-        self.flags.discard("C")
+        self.SR.C = False
 
     def SEC(self, opcode = 0x38):
         """ Set Carry """
-        self.flags.add("C")
+        self.SR.C = True
 
     def CLV(self, opcode = 0xB8):
         """ Clear Overflow """
-        self.flags.discard("V")
+        self.SR.V = False
 
     def BRK(self, opcode):
         """ software debugging (NMI) """
@@ -807,7 +788,7 @@ class CPU(object):
         self.SEI(0x78)
         #print("NEW PC $%X" % new_PC)
         if B_BRK:
-            self.flags.add("B")
+            self.SR.B = True
         self.set_PC(new_PC)
 
     def PHP(self, opcode):
@@ -827,265 +808,6 @@ class CPU(object):
         value = self.stack_pop(1)
         self.write_register(S_A, value)
         self.update_flags_by_number(value)
-
-    opcode_to_mnem = [
-        "BRK", 
-        "ORA",
-        "KIL", 
-        "SLO",
-        "NOP",
-        "ORA",
-        "ASL",
-        "SLO",
-        "PHP",
-        "ORA",
-        "ASL",
-        "ANC",
-        "NOP",
-        "ORA",
-        "ASL",
-        "SLO",
-        "BPL",
-        "ORA",
-        "KIL",
-        "SLO",
-        "NOP",
-        "ORA",
-        "ASL",
-        "SLO",
-        "CLC",
-        "ORA",
-        "NOP",
-        "SLO",
-        "NOP",
-        "ORA",
-        "ASL",
-        "SLO",
-        "JSR",
-        "AND",
-        "KIL",
-        "RLA",
-        "BIT",
-        "AND",
-        "ROL",
-        "RLA",
-        "PLP",
-        "AND",
-        "ROL",
-        "ANC",
-        "BIT",
-        "AND",
-        "ROL",
-        "RLA",
-        "BMI",
-        "AND",
-        "KIL",
-        "RLA",
-        "NOP",
-        "AND",
-        "ROL",
-        "RLA",
-        "SEC",
-        "AND",
-        "NOP",
-        "RLA",
-        "NOP",
-        "AND",
-        "ROL",
-        "RLA",
-        "RTI",
-        "EOR",
-        "KIL",
-        "SRE",
-        "NOP",
-        "EOR",
-        "LSR",
-        "SRE",
-        "PHA",
-        "EOR",
-        "LSR",
-        "ALR",
-        "JMP",
-        "EOR",
-        "LSR",
-        "SRE",
-        "BVC",
-        "EOR",
-        "KIL",
-        "SRE",
-        "NOP",
-        "EOR",
-        "LSR",
-        "SRE",
-        "CLI",
-        "EOR",
-        "NOP",
-        "SRE",
-        "NOP",
-        "EOR",
-        "LSR",
-        "SRE",
-        "RTS",
-        "ADC",
-        "KIL",
-        "RRA", # ROR then ADC
-        "NOP",
-        "ADC",
-        "ROR",
-        "RRA",
-        "PLA",
-        "ADC",
-        "ROR",
-        "ARR",
-        "JMP",
-        "ADC",
-        "ROR",
-        "RRA",
-        "BVS",
-        "ADC",
-        "KIL",
-        "RRA",
-        "NOP",
-        "ADC",
-        "ROR",
-        "RRA",
-        "SEI",
-        "ADC",
-        "NOP",
-        "RRA",
-        "NOP",
-        "ADC",
-        "ROR",
-        "RRA",
-        "NOP",
-        "STA",
-        "NOP",
-        "SAX",
-        "STY",
-        "STA",
-        "STX",
-        "SAX",
-        "DEY",
-        "NOP",
-        "TXA",
-        "XAA",
-        "STY",
-        "STA",
-        "STX",
-        "SAX",
-        "BCC",
-        "STA",
-        "KIL",
-        "AHX",
-        "STY",
-        "STA",
-        "STX",
-        "SAX",
-        "TYA",
-        "STA",
-        "TXS",
-        "TAS", # unstable.
-        "SHY",
-        "STA",
-        "SHX",
-        "AHX",
-        "LDY",
-        "LDA",    
-        "LDX",
-        "LAX",
-        "LDY",
-        "LDA",
-        "LDX",
-        "LAX",
-        "TAY",
-        "LDA",
-        "TAX",
-        "LAX",
-        "LDY",
-        "LDA",
-        "LDX",
-        "LAX",
-        "BCS",
-        "LDA",
-        "KIL",
-        "LAX",
-        "LDY",
-        "LDA",
-        "LDX",
-        "LAX",
-        "CLV",
-        "LDA",
-        "TSX",
-        "LAS",
-        "LDY",
-        "LDA",
-        "LDX",
-        "LAX",
-        "CPY",
-        "CMP",
-        "NOP",
-        "DCP",
-        "CPY",
-        "CMP",
-        "DEC",
-        "DCP",
-        "INY",
-        "CMP",
-        "DEX",
-        "AXS",
-        "CPY",
-        "CMP",
-        "DEC",
-        "DCP",
-        "BNE",
-        "CMP",
-        "KIL",
-        "DCP",
-        "NOP",
-        "CMP",
-        "DEC",
-        "DCP",
-        "CLD",
-        "CMP",
-        "NOP",
-        "DCP",
-        "NOP",
-        "CMP",
-        "DEC",
-        "DCP",
-        "CPX",
-        "SBC",
-        "NOP",
-        "ISC",
-        "CPX",
-        "SBC",
-        "INC",
-        "ISC",
-        "INX",
-        "SBC",
-        "NOP",
-        "SBC",
-        "CPX",
-        "SBC",
-        "INC",
-        "ISC",
-        "BEQ",
-        "SBC",
-        "KIL",
-        "ISC",
-        "NOP",
-        "SBC",
-        "INC",
-        "ISC", # INC then SBC
-        "SED",
-        "SBC",
-        "NOP",
-        "ISC",
-        "NOP",
-        "SBC",
-        "INC",
-        "ISC",
-    ]
 
     def AHX(self, opcode):
         raise NotImplementedError("AHX not implemented")
@@ -1182,8 +904,6 @@ class CPU(object):
         raise NotImplementedError("XAA not implemented")
         sys.exit(1)
 
-
-    exotic_opcodes = set(["RRA", "TAS", "SRE", "SLO", "KIL", "SHX", "SHY", "SAX", "LAS", "XAS", "ALR", "RLA", "DCP", "AHX", "ARR", "LAX", "ANC", "ISC", "XAA", "AXS", ])
 
 if __name__ == "__main__":
     CPU_1 = CPU()
